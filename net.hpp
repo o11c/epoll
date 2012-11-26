@@ -32,7 +32,7 @@ public:
     Handler(int f, bool r, bool w)
     : fd(f), read(r), write(w)
     {}
-    virtual ~Handler() = default;
+    virtual ~Handler();
 private:
     virtual Status on_readable() = 0;
     virtual Status on_writable() = 0;
@@ -47,6 +47,7 @@ public:
     ~SocketSet();
     operator bool() const;
     void add(std::unique_ptr<Handler> handler);
+    void wipe();
     void poll();
     void poll(std::chrono::milliseconds timeout);
 };

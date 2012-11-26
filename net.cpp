@@ -12,38 +12,188 @@
 
 #include <sys/epoll.h>
 
+#include <algorithm>
+
 static_assert(EAGAIN == EWOULDBLOCK, "you have crazy errno values ...");
 
 namespace net
 {
 
+Handler::~Handler()
+{
+    close(fd);
+}
+
 SocketSet::SocketSet()
 : epfd(epoll_create1(0))
 , sockets()
-{}
+{
+    if (epfd == -1)
+        // default ctor of std::map does no allocation
+        fprintf(stderr, "Failed to create epoll instance: %m\n");
+}
 
 SocketSet::~SocketSet()
 {
-    close(epfd);
+    if (epfd != -1)
+        close(epfd);
 }
 
 SocketSet::operator bool() const
 {
-    return !sockets.empty();
+    // instead guarantee that if epfd == -1, sockets is always empty
+    // return epfd != -1 and !sockets.empty();
+    return not sockets.empty();
 }
 
 void SocketSet::add(std::unique_ptr<net::Handler> sock)
 {
+    if (epfd == -1)
+        return;
     if (!sock)
         return;
-    if (sock->fd == -1)
+    int fd = sock->fd;
+    bool read = sock->read;
+    bool write = sock->write;
+    if (fd == -1 or not (read or write))
         return;
-    sockets[sock->fd] = std::move(sock);
+
+    epoll_event event {};
+    if (sock->read)
+        event.events |= EPOLLIN;
+    if (sock->write)
+        event.events |= EPOLLOUT;
+    // I don't understand exactly what the following do
+    // so I'll set them and see what happens
+    event.events |= EPOLLRDHUP;
+    event.events |= EPOLLPRI;
+    // the following is safe only if all handlers loop until EAGAIN
+    // AND you never check writing when it's not needed
+    // TODO enable this when writing check is fixed
+    //event.events |= EPOLLET;
+    event.data.fd = fd;
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1)
+    {
+        fprintf(stderr, "Failed to add to epoll: %m\n");
+        return;
+    }
+    sockets[fd] = std::move(sock);
+}
+
+void SocketSet::wipe()
+{
+    close(epfd);
+    epfd = -1;
+    sockets.clear();
 }
 
 void SocketSet::poll(std::chrono::milliseconds timeout)
 {
-    ; // TODO
+    constexpr static int MAX_EVENTS = 256;
+    epoll_event events[MAX_EVENTS];
+    int n = MAX_EVENTS;
+    while (true)
+    {
+        n = epoll_wait(epfd, events, MAX_EVENTS, timeout.count());
+        if (n == -1)
+        {
+            fprintf(stderr, "epoll_wait(): %m\n");
+            wipe();
+            return;
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            epoll_event& event = events[i];
+            int fd = event.data.fd;
+            auto it = sockets.find(fd);
+            if (it == sockets.end())
+            {
+                fprintf(stderr, "epoll event fd not found: %m\n");
+                wipe();
+                return;
+            }
+
+            bool remove = false;
+            Handler *p = it->second.get();
+            if (event.events & EPOLLIN)
+            {
+                event.events &= ~EPOLLIN;
+                if (p->on_readable() == Handler::Status::DROP)
+                {
+                    int err;
+                    remove = not p->write;
+                    p->read = false;
+                    if (remove)
+                        err = epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
+                    else
+                        err = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
+
+                    if (err == -1)
+                    {
+                        fprintf(stderr, "epoll_ctl(mod/del): %m\n");
+                        wipe();
+                        return;
+                    }
+                }
+            }
+
+            if (event.events & EPOLLOUT)
+            {
+                event.events &= ~EPOLLOUT;
+                if (p->on_writable() == Handler::Status::DROP)
+                {
+                    int err;
+                    remove = not p->read;
+                    p->write = false;
+                    if (remove)
+                        err = epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
+                    else
+                        err = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
+
+                    if (err == -1)
+                    {
+                        fprintf(stderr, "epoll_ctl(mod/del): %m\n");
+                        wipe();
+                        return;
+                    }
+                }
+            }
+
+            if (event.events & EPOLLRDHUP)
+            {
+                event.events &= ~EPOLLRDHUP;
+                int err;
+                fprintf(stderr, "epoll rdhup");
+                remove = not p->write;
+                if (remove)
+                    err = epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
+                else
+                    err = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
+                if (err == -1)
+                {
+                    fprintf(stderr, "epoll_ctl(mod/del): %m\n");
+                    wipe();
+                    return;
+                }
+            }
+
+            if (event.events)
+                fprintf(stderr, "epoll got unknown: %u", event.events);
+
+            // TODO fix removal
+            if (remove)
+                sockets.erase(it);
+        }
+
+        if (__builtin_expect(n != MAX_EVENTS, true))
+            break;
+
+        // in the unlikely event that there are LOTS of events,
+        // for the rest don't wait for any time
+        timeout = std::chrono::milliseconds::zero();
+    }
 }
 
 void SocketSet::poll()
@@ -200,6 +350,20 @@ void BufferHandler::write(const_array<uint8_t> b)
 
 Handler::Status BufferHandler::on_readable()
 {
+    while (true)
+    {
+        uint8_t buf[4096];
+        ssize_t r = ::read(fd, buf, sizeof(buf));
+        if (r == 0)
+            return Handler::Status::DROP;
+        if (r == -1)
+            return errno == EAGAIN
+                ? Handler::Status::KEEP
+                : Handler::Status::DROP;
+        size_t s = inbuf.size();
+        inbuf.resize(s + r);
+        std::copy(buf, buf + r, inbuf.data() + s);
+    }
     return Handler::Status::KEEP;
 }
 

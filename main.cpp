@@ -2,7 +2,8 @@
 #include "make-unique.hpp"
 #include "net.hpp"
 
-constexpr uint16_t PORT = 5000;
+#include <iostream>
+#include <sstream>
 
 void echo(const_array<uint8_t> line, net::BufferHandler *wbh)
 {
@@ -10,8 +11,30 @@ void echo(const_array<uint8_t> line, net::BufferHandler *wbh)
     wbh->write(const_array<uint8_t>{rline.data(), rline.size()});
 }
 
-int main(int argc, char **)
+int main(int argc, char **argv)
 {
+    uint16_t port = 0;
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+        if (arg == "--help")
+        {
+            std::cout << "Usage: ./main --port <number>\n";
+            std::cout << "Then type 'help' for interactive help\n";
+            return 0;
+        }
+        if (arg == "--port")
+        {
+            std::istringstream(argv[++i]) >> port;
+            continue;
+        }
+        std::cerr << "Error: unknown argument: " << arg << std::endl;
+    }
+    if (port == 0)
+    {
+        std::cerr << "Error: --port not specified" << std::endl;
+        return 1;
+    }
     net::SocketSet pool;
     pool.add(
         make_unique<net::ListenHandler>(
@@ -22,14 +45,9 @@ int main(int argc, char **)
                         make_unique<net::SentinelParser>(echo),
                         fd));
             },
-            PORT,
+            port,
             net::ipv4_any));
 
     while (pool)
-    {
-        if (argc--)
-            pool.poll();
-        else
-            pool.poll(std::chrono::seconds(5));
-    }
+        pool.poll();
 }
