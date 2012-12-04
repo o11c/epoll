@@ -3,6 +3,7 @@
 #include "net.hpp"
 #include "cli.hpp"
 #include "chat.hpp"
+#include "conquest-player.hpp"
 
 #include <cassert>
 #include <iostream>
