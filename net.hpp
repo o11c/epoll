@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include <sys/epoll.h>
+
 #include <chrono>
 #include <map>
 #include <memory>
@@ -15,14 +17,23 @@
 namespace net
 {
 
+class SocketSet;
+
 class Handler
 {
     friend class SocketSet;
+    epoll_event create_event();
 protected:
     const int fd;
+    void enable_write();
+#if 0
+    void replace(std::unique_ptr<Handler>);
+#endif
+    void add_peer(std::unique_ptr<Handler>);
 private:
     bool read;
     bool write;
+    SocketSet *set;
 public:
     enum class Status : bool
     {
@@ -30,7 +41,7 @@ public:
         KEEP,
     };
     Handler(int f, bool r, bool w)
-    : fd(f), read(r), write(w)
+    : fd(f), read(r), write(w), set(NULL)
     {}
     virtual ~Handler();
 private:
@@ -40,8 +51,11 @@ private:
 
 class SocketSet
 {
+    friend class Handler;
     int epfd;
     std::map<int, std::unique_ptr<Handler>> sockets;
+
+    void handle_event(epoll_event event);
 public:
     SocketSet();
     ~SocketSet();
@@ -56,7 +70,7 @@ class ListenHandler : public Handler
 {
     // TODO replace with a class so I can do overridden versions
     // for IPv4, IPv6, and Unix connections
-    typedef std::function<void(int, const sockaddr *, socklen_t)> Cb;
+    typedef std::function<std::unique_ptr<Handler>(int, const sockaddr *, socklen_t)> Cb;
 
     Cb adder;
 public:
@@ -73,6 +87,7 @@ class BufferHandler : public Handler
     std::vector<uint8_t> inbuf;
     std::vector<uint8_t> outbuf;
     std::unique_ptr<Parser> parser;
+    Handler::Status do_readable();
 public:
     BufferHandler(std::unique_ptr<Parser> p, int fd);
     void write(const_array<uint8_t> b);

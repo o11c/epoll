@@ -1,7 +1,10 @@
 // Copyright 2012 Ben Longbons
 #include "net.hpp"
 
-#include <errno.h>
+#include <cerrno>
+#include <cstdlib>
+#include <cassert>
+
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -18,6 +21,54 @@ static_assert(EAGAIN == EWOULDBLOCK, "you have crazy errno values ...");
 
 namespace net
 {
+
+epoll_event Handler::create_event()
+{
+    epoll_event event {};
+    if (this->read)
+        event.events |= EPOLLIN | EPOLLRDHUP;
+    if (this->write)
+        event.events |= EPOLLOUT;
+    // I don't understand exactly what the following does
+    // so I'll set them and see what happens
+    event.events |= EPOLLPRI;
+    // the following is safe only if all handlers loop until EAGAIN
+    // AND you never check writing when it's not needed
+    // TODO enable this
+    //event.events |= EPOLLET;
+    event.data.fd = this->fd;
+    return event;
+}
+
+void Handler::enable_write()
+{
+    assert(this->read);
+    this->write = true;
+    epoll_event event = this->create_event();
+    epoll_ctl(set->epfd, EPOLL_CTL_MOD, this->fd, &event);
+}
+
+#if 0
+void Handler::replace(std::unique_ptr<Handler> h)
+{
+    // Won't work - fd will be close
+    // (need to dup or something)
+    // Also would cause problems with the poll() loop.
+    // It's probably not worth fixing - instead change at parser level.
+    if (h->fd != this->fd)
+    {
+        fprintf(stderr, "Fatal: replacement handler differs in fd!\n");
+        abort();
+    }
+    set->sockets[fd] = std::move(h);
+    // this has been destroyed
+}
+#endif
+
+void Handler::add_peer(std::unique_ptr<Handler> h)
+{
+    set->add(std::move(h));
+}
 
 Handler::~Handler()
 {
@@ -58,26 +109,15 @@ void SocketSet::add(std::unique_ptr<net::Handler> sock)
     if (fd == -1 or not (read or write))
         return;
 
-    epoll_event event {};
-    if (sock->read)
-        event.events |= EPOLLIN;
-    if (sock->write)
-        event.events |= EPOLLOUT;
-    // I don't understand exactly what the following do
-    // so I'll set them and see what happens
-    event.events |= EPOLLRDHUP;
-    event.events |= EPOLLPRI;
-    // the following is safe only if all handlers loop until EAGAIN
-    // AND you never check writing when it's not needed
-    // TODO enable this when writing check is fixed
-    //event.events |= EPOLLET;
-    event.data.fd = fd;
+    epoll_event event = sock->create_event();
 
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1)
     {
         fprintf(stderr, "Failed to add to epoll: %m\n");
         return;
     }
+    sock->set = this;
+    // TODO: ensure that fd was not already in the set - it will be closed!
     sockets[fd] = std::move(sock);
 }
 
@@ -86,6 +126,98 @@ void SocketSet::wipe()
     close(epfd);
     epfd = -1;
     sockets.clear();
+}
+
+void SocketSet::handle_event(epoll_event event)
+{
+    bool modify = false;
+
+    const int fd = event.data.fd;
+    const auto it = sockets.find(fd);
+    if (it == sockets.end())
+    {
+        fprintf(stderr, "epoll event fd not found: %d\n", fd);
+        wipe();
+        return;
+    }
+
+    Handler *p = it->second.get();
+    if (event.events & EPOLLIN)
+    {
+        // for record of unknowns
+        event.events &= ~EPOLLIN;
+        // Note: p->on_readable() may flip q->write for any q in
+        // set, including p. The code below is just fine with that.
+        if (p->on_readable() == Handler::Status::DROP)
+        {
+            modify = true;
+            p->read = false;
+        }
+    }
+
+    if (event.events & EPOLLOUT)
+    {
+        event.events &= ~EPOLLOUT;
+        if (p->on_writable() == Handler::Status::DROP)
+        {
+            // note: this is normal, when a write completes.
+            modify = true;
+            p->write = false;
+        }
+    }
+
+    if (event.events & EPOLLRDHUP)
+    {
+        event.events &= ~EPOLLRDHUP;
+        modify = true;
+        // from what I can tell, this only happens in cases
+        // where EPOLLIN is also returned. Assuming the on_readable()
+        // hook is sensible, it will detect read() returning 0 and
+        // disable itself already.
+        if (p->read)
+            fprintf(stderr, "Got RDHUP without hanging up in read");
+        p->read = false;
+    }
+
+    if (event.events & EPOLLERR)
+    {
+        // I'm not sure when this happens
+        event.events &= ~EPOLLERR;
+        fprintf(stderr, "fd %d error\n", fd);
+        wipe();
+        return;
+    }
+
+    if (event.events & EPOLLHUP)
+    {
+        // I'm not sure when this happens
+        event.events &= ~EPOLLHUP;
+        fprintf(stderr, "fd %d hangup\n", fd);
+        wipe();
+        return;
+    }
+
+
+    if (event.events)
+        fprintf(stderr, "epoll got unknown: %x", event.events);
+
+    if (not modify)
+        return;
+
+    // Note: p->write may have been enabled by the read callback.
+    // In this case, it will have called epoll_ctl itself.
+    int op = (p->read or p->write)
+        ? EPOLL_CTL_MOD
+        : EPOLL_CTL_DEL;
+    event = p->create_event();
+    if (epoll_ctl(this->epfd, op, fd, &event) == -1)
+    {
+        fprintf(stderr, "epoll_ctl mod/del failed: %m");
+        wipe();
+        return;
+    }
+    if (op == EPOLL_CTL_DEL) // not (read or write)
+        sockets.erase(it);
 }
 
 void SocketSet::poll(std::chrono::milliseconds timeout)
@@ -104,88 +236,7 @@ void SocketSet::poll(std::chrono::milliseconds timeout)
         }
 
         for (int i = 0; i < n; ++i)
-        {
-            epoll_event& event = events[i];
-            int fd = event.data.fd;
-            auto it = sockets.find(fd);
-            if (it == sockets.end())
-            {
-                fprintf(stderr, "epoll event fd not found: %m\n");
-                wipe();
-                return;
-            }
-
-            bool remove = false;
-            Handler *p = it->second.get();
-            if (event.events & EPOLLIN)
-            {
-                event.events &= ~EPOLLIN;
-                if (p->on_readable() == Handler::Status::DROP)
-                {
-                    int err;
-                    remove = not p->write;
-                    p->read = false;
-                    if (remove)
-                        err = epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
-                    else
-                        err = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
-
-                    if (err == -1)
-                    {
-                        fprintf(stderr, "epoll_ctl(mod/del): %m\n");
-                        wipe();
-                        return;
-                    }
-                }
-            }
-
-            if (event.events & EPOLLOUT)
-            {
-                event.events &= ~EPOLLOUT;
-                if (p->on_writable() == Handler::Status::DROP)
-                {
-                    int err;
-                    remove = not p->read;
-                    p->write = false;
-                    if (remove)
-                        err = epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
-                    else
-                        err = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
-
-                    if (err == -1)
-                    {
-                        fprintf(stderr, "epoll_ctl(mod/del): %m\n");
-                        wipe();
-                        return;
-                    }
-                }
-            }
-
-            if (event.events & EPOLLRDHUP)
-            {
-                event.events &= ~EPOLLRDHUP;
-                int err;
-                fprintf(stderr, "epoll rdhup");
-                remove = not p->write;
-                if (remove)
-                    err = epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &event);
-                else
-                    err = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &event);
-                if (err == -1)
-                {
-                    fprintf(stderr, "epoll_ctl(mod/del): %m\n");
-                    wipe();
-                    return;
-                }
-            }
-
-            if (event.events)
-                fprintf(stderr, "epoll got unknown: %u", event.events);
-
-            // TODO fix removal
-            if (remove)
-                sockets.erase(it);
-        }
+            this->handle_event(events[i]);
 
         if (__builtin_expect(n != MAX_EVENTS, true))
             break;
@@ -324,7 +375,7 @@ Handler::Status ListenHandler::on_readable()
         case AF_INET6:
         case AF_UNIX:
         default:
-            adder(cfd, addr_ptr, addr_len);
+            add_peer(adder(cfd, addr_ptr, addr_len));
         }
     }
 }
@@ -335,7 +386,7 @@ Handler::Status ListenHandler::on_writable()
 }
 
 BufferHandler::BufferHandler(std::unique_ptr<Parser> p, int fd)
-: Handler(fd, true, true)
+: Handler(fd, true, false) // write enabled as needed
 , parser(std::move(p))
 {
 }
@@ -344,11 +395,13 @@ void BufferHandler::write(const_array<uint8_t> b)
 {
     size_t os = outbuf.size();
     size_t ns = b.size();
+    if (!os && ns)
+        this->enable_write();
     outbuf.resize(os + ns);
     std::copy(b.begin(), b.end(), outbuf.begin() + os);
 }
 
-Handler::Status BufferHandler::on_readable()
+Handler::Status BufferHandler::do_readable()
 {
     while (true)
     {
@@ -363,8 +416,21 @@ Handler::Status BufferHandler::on_readable()
         size_t s = inbuf.size();
         inbuf.resize(s + r);
         std::copy(buf, buf + r, inbuf.data() + s);
+        // if I called parse on each iteration, it would probably:
+        // + do less memory allocation
+        // + remove the need for split methods
+        // + behave well when whole packets are read at a time (common)
+        // - behave poorly when packets cross the 4096-byte limit (rare)
+        // - be less icache-friendly, and possibly less dcache-friendly
     }
-    return Handler::Status::KEEP;
+}
+
+Handler::Status BufferHandler::on_readable()
+{
+    Handler::Status rv = this->do_readable();
+    size_t n = (this->parser)->parse({inbuf.data(), inbuf.size()}, this);
+    inbuf.erase(inbuf.begin(), inbuf.begin() + n);
+    return rv;
 }
 
 Handler::Status BufferHandler::on_writable()
@@ -375,7 +441,7 @@ Handler::Status BufferHandler::on_writable()
             ? Handler::Status::KEEP
             : Handler::Status::DROP;
     outbuf.erase(outbuf.begin(), outbuf.begin() + w);
-    return Handler::Status::KEEP;
+    return outbuf.empty() ? Handler::Status::DROP : Handler::Status::KEEP;
 }
 
 SentinelParser::SentinelParser(Cb f, uint8_t s)

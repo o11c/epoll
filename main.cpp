@@ -5,9 +5,11 @@
 #include <iostream>
 #include <sstream>
 
+// for testing: just reverse input lines
 void echo(const_array<uint8_t> line, net::BufferHandler *wbh)
 {
-    std::vector<uint8_t> rline(line.rbegin(), line.rend());
+    std::vector<uint8_t> rline(line.size() + 1);
+    *std::copy(line.rbegin(), line.rend(), rline.begin()) = '\n';
     wbh->write(const_array<uint8_t>{rline.data(), rline.size()});
 }
 
@@ -38,12 +40,11 @@ int main(int argc, char **argv)
     net::SocketSet pool;
     pool.add(
         make_unique<net::ListenHandler>(
-            [&pool](int fd, const sockaddr *, socklen_t)
+            [](int fd, const sockaddr *, socklen_t)
             {
-                pool.add(
-                    make_unique<net::BufferHandler>(
+                return make_unique<net::BufferHandler>(
                         make_unique<net::SentinelParser>(echo),
-                        fd));
+                        fd);
             },
             port,
             net::ipv4_any));
