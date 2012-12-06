@@ -13,6 +13,16 @@ void echo(const_array<uint8_t> line, net::BufferHandler *wbh)
     wbh->write(const_array<uint8_t>{rline.data(), rline.size()});
 }
 
+bool ok_and_eof(std::istream& in)
+{
+    if (not in)
+        return false;
+    char c;
+    if (in >> c)
+        return false;
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     uint16_t port = 0;
@@ -22,19 +32,32 @@ int main(int argc, char **argv)
         if (arg == "--help")
         {
             std::cout << "Usage: ./main --port <number>\n";
-            std::cout << "Then type 'help' for interactive help\n";
+            std::cout << "Port number must be between 1 and 65535,\n";
+            std::cout << "and you must have appropriate permissions.\n";
+            std::cout << '\n';
+            std::cout << "Then use an external client to connect.\n";
+            std::cout << "e.g.: netcat <IP of localhost> <port>\n";
+            std::cout << "You can use telnet in place of netcat,\n";
+            std::cout << "but it may be awkward\n";
             return 0;
         }
         if (arg == "--port")
         {
-            std::istringstream(argv[++i]) >> port;
-            continue;
+            if (++i == argc)
+            {
+                std::cerr << "Error: port argument not given\n";
+                return 1;
+            }
+            if (ok_and_eof(std::istringstream(argv[i]) >> port) and port)
+                continue;
+            std::cerr << "Error: --port argument not integer in range\n";
+            return 1;
         }
-        std::cerr << "Error: unknown argument: " << arg << std::endl;
+        std::cerr << "Error: unknown argument: " << arg << '\n';
     }
     if (port == 0)
     {
-        std::cerr << "Error: --port not specified" << std::endl;
+        std::cerr << "Error: --port not specified, try --help\n";
         return 1;
     }
     net::SocketSet pool;
