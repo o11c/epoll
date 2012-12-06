@@ -6,7 +6,7 @@ CXXFLAGS = -g -O
 override CC=${CXX} # for linking
 override CPPFLAGS += -std=c++0x
 
-main: main.o net.o
+main: main.o net.o cli.o chat.o
 clean:
 	rm -f *.o main
 make.deps: $(wildcard *.cpp *.hpp)

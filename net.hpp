@@ -9,6 +9,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "const_array.hpp"
@@ -16,6 +17,8 @@
 
 namespace net
 {
+
+std::string sockaddr_to_string(int fd, const sockaddr *addr, socklen_t);
 
 class SocketSet;
 
@@ -29,7 +32,7 @@ protected:
 #if 0
     void replace(std::unique_ptr<Handler>);
 #endif
-    void add_peer(std::unique_ptr<Handler>);
+    bool add_peer(std::unique_ptr<Handler>);
 private:
     bool read;
     bool write;
@@ -60,7 +63,7 @@ public:
     SocketSet();
     ~SocketSet();
     operator bool() const;
-    void add(std::unique_ptr<Handler> handler);
+    bool add(std::unique_ptr<Handler> handler);
     void wipe();
     void poll();
     void poll(std::chrono::milliseconds timeout);
@@ -100,20 +103,32 @@ class Parser
 protected:
     typedef const_array<uint8_t> Bytes;
 public:
-    virtual size_t parse(Bytes bytes, BufferHandler *wbh) = 0;
+    virtual void init(BufferHandler *wbh) = 0;
+    virtual size_t parse(Bytes bytes) = 0;
     virtual ~Parser() = default;
+};
+
+class LineHandler
+{
+    friend class SentinelParser;
+protected:
+    BufferHandler *wbh;
+private:
+    void init(BufferHandler *wbh);
+public:
+    virtual void handle(const_string line) = 0;
+    virtual ~LineHandler() {};
 };
 
 class SentinelParser : public Parser
 {
-    typedef std::function<void(Bytes, BufferHandler *)> Cb;
-
     const uint8_t sentinel;
     size_t no_sentinel;
-    Cb do_line;
+    std::unique_ptr<LineHandler> line_handler;
 public:
-    SentinelParser(Cb f, uint8_t s='\n');
-    virtual size_t parse(Bytes bytes, BufferHandler *wbh) override;
+    SentinelParser(std::unique_ptr<LineHandler> lh, uint8_t s='\n');
+    virtual void init(BufferHandler *wbh) override;
+    virtual size_t parse(Bytes bytes) override;
 };
 
 } // namespace net

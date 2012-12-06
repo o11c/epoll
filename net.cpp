@@ -16,11 +16,41 @@
 #include <sys/epoll.h>
 
 #include <algorithm>
+#include <sstream>
 
 static_assert(EAGAIN == EWOULDBLOCK, "you have crazy errno values ...");
 
 namespace net
 {
+
+std::string sockaddr_to_string(int fd, const sockaddr *addr, socklen_t)
+{
+    switch(addr->sa_family)
+    {
+    case AF_INET:
+    {
+        char buf[INET_ADDRSTRLEN];
+        auto addr4 = reinterpret_cast<const sockaddr_in *>(addr);
+        const in_addr& ia = addr4->sin_addr;
+        return inet_ntop(AF_INET, &ia, buf, INET_ADDRSTRLEN);
+    }
+    case AF_INET6:
+    {
+        char buf[INET6_ADDRSTRLEN];
+        auto addr6 = reinterpret_cast<const sockaddr_in6 *>(addr);
+        const in6_addr& ia = addr6->sin6_addr;
+        return inet_ntop(AF_INET6, &ia, buf, INET6_ADDRSTRLEN);
+    }
+    case AF_UNIX:
+    {
+        auto addru = reinterpret_cast<const sockaddr_un *>(addr);
+        return addru->sun_path;
+    }
+    }
+    std::ostringstream o;
+    o << "/proc/self/fd/" << fd;
+    return o.str();
+}
 
 epoll_event Handler::create_event()
 {
@@ -65,14 +95,15 @@ void Handler::replace(std::unique_ptr<Handler> h)
 }
 #endif
 
-void Handler::add_peer(std::unique_ptr<Handler> h)
+bool Handler::add_peer(std::unique_ptr<Handler> h)
 {
-    set->add(std::move(h));
+    return set->add(std::move(h));
 }
 
 Handler::~Handler()
 {
-    close(fd);
+    if (fd != -1)
+        close(fd);
 }
 
 SocketSet::SocketSet()
@@ -97,28 +128,29 @@ SocketSet::operator bool() const
     return not sockets.empty();
 }
 
-void SocketSet::add(std::unique_ptr<net::Handler> sock)
+bool SocketSet::add(std::unique_ptr<net::Handler> sock)
 {
     if (epfd == -1)
-        return;
+        return false;
     if (!sock)
-        return;
+        return false;
     int fd = sock->fd;
     bool read = sock->read;
     bool write = sock->write;
     if (fd == -1 or not (read or write))
-        return;
+        return false;
 
     epoll_event event = sock->create_event();
 
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1)
     {
         fprintf(stderr, "Failed to add to epoll: %m\n");
-        return;
+        return false;
     }
     sock->set = this;
     // TODO: ensure that fd was not already in the set - it will be closed!
     sockets[fd] = std::move(sock);
+    return true;
 }
 
 void SocketSet::wipe()
@@ -175,7 +207,7 @@ void SocketSet::handle_event(epoll_event event)
         // hook is sensible, it will detect read() returning 0 and
         // disable itself already.
         if (p->read)
-            fprintf(stderr, "Got RDHUP without hanging up in read");
+            fprintf(stderr, "Got RDHUP without first hanging up in read");
         p->read = false;
     }
 
@@ -190,11 +222,12 @@ void SocketSet::handle_event(epoll_event event)
 
     if (event.events & EPOLLHUP)
     {
-        // I'm not sure when this happens
         event.events &= ~EPOLLHUP;
-        fprintf(stderr, "fd %d hangup\n", fd);
-        wipe();
-        return;
+        modify = true;
+        // This happens when shutdown(fd, SHUT_WR) is called
+        if (p->write)
+            fprintf(stderr, "Got HUP without first hanging up in write");
+        p->write = false;
     }
 
 
@@ -389,6 +422,7 @@ BufferHandler::BufferHandler(std::unique_ptr<Parser> p, int fd)
 : Handler(fd, true, false) // write enabled as needed
 , parser(std::move(p))
 {
+    parser->init(this);
 }
 
 void BufferHandler::write(const_array<uint8_t> b)
@@ -428,7 +462,7 @@ Handler::Status BufferHandler::do_readable()
 Handler::Status BufferHandler::on_readable()
 {
     Handler::Status rv = this->do_readable();
-    size_t n = (this->parser)->parse({inbuf.data(), inbuf.size()}, this);
+    size_t n = (this->parser)->parse({inbuf.data(), inbuf.size()});
     inbuf.erase(inbuf.begin(), inbuf.begin() + n);
     return rv;
 }
@@ -444,14 +478,23 @@ Handler::Status BufferHandler::on_writable()
     return outbuf.empty() ? Handler::Status::DROP : Handler::Status::KEEP;
 }
 
-SentinelParser::SentinelParser(Cb f, uint8_t s)
-: sentinel(s)
-, no_sentinel()
-, do_line(std::move(f))
+void LineHandler::init(BufferHandler *wbh)
 {
+    this->wbh = wbh;
 }
 
-size_t SentinelParser::parse(Bytes bytes, BufferHandler *wbh)
+SentinelParser::SentinelParser(std::unique_ptr<LineHandler> lh, uint8_t s)
+: sentinel(s)
+, no_sentinel()
+, line_handler(std::move(lh))
+{}
+
+void SentinelParser::init(BufferHandler *wbh)
+{
+    line_handler->init(wbh);
+}
+
+size_t SentinelParser::parse(Bytes bytes)
 {
     auto search = bytes.begin() + no_sentinel;
     auto data = bytes.begin();
@@ -464,7 +507,7 @@ size_t SentinelParser::parse(Bytes bytes, BufferHandler *wbh)
             no_sentinel = bytes.end() - data;
             return data - bytes.begin();
         }
-        do_line(Bytes(data, search - data), wbh);
+        line_handler->handle(Bytes(data, search - data));
         ++search;
         data = search;
     }
