@@ -1,6 +1,7 @@
-// Copyright 2012 Ben Longbons
 #ifndef NET_HPP
 #define NET_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include <cstdint>
 

@@ -1,4 +1,5 @@
 // Copyright 2012 Ben Longbons
+// GPL3+
 #include "make-unique.hpp"
 #include "net.hpp"
 #include "cli.hpp"

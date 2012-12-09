@@ -1,4 +1,5 @@
 // Copyright 2012 Ben Longbons
+// GPL3+
 #include "net.hpp"
 
 #include <cerrno>

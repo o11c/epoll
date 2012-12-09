@@ -1,5 +1,7 @@
 #ifndef CHAT_HPP
 #define CHAT_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include <memory>
 #include <set>

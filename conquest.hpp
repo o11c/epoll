@@ -1,5 +1,7 @@
 #ifndef CONQUEST_HPP
 #define CONQUEST_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include <array>
 #include <map>

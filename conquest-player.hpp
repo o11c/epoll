@@ -1,5 +1,7 @@
 #ifndef CONQUEST_PLAYER_HPP
 #define CONQUEST_PLAYER_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include "conquest.hpp"
 

@@ -1,3 +1,5 @@
+// Copyright 2012 Ben Longbons
+// GPL3+
 #include "conquest.hpp"
 
 namespace conquest

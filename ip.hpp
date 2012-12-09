@@ -1,6 +1,7 @@
-// Copyright 2012 Ben Longbons
 #ifndef IP_HPP
 #define IP_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include <cstdint>
 #include <netinet/in.h>

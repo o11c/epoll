@@ -1,5 +1,7 @@
 #ifndef CLI_HPP
 #define CLI_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include <functional>
 #include <map>

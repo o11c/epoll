@@ -1,6 +1,7 @@
-// Copyright 2012 Ben Longbons
 #ifndef CONST_ARRAY_HPP
 #define CONST_ARRAY_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 #include <cstring>
 

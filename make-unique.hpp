@@ -1,6 +1,7 @@
-// Copyright 2012 Ben Longbons
 #ifndef MAKE_UNIQUE_HPP
 #define MAKE_UNIQUE_HPP
+// Copyright 2012 Ben Longbons
+// GPL3+
 
 # include <memory>
 
