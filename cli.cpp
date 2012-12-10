@@ -63,10 +63,10 @@ namespace cli
         if (it == _commands.end())
         {
             if (_default)
-                return _default(cmd, args);
+                return _default(line);
             return Status::NOT_FOUND;
         }
-        return it->second(cmd, args);
+        return it->second(line);
 
     }
 }

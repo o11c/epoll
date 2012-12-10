@@ -20,6 +20,11 @@ public:
     typedef std::reverse_iterator<iterator> reverse_iterator;
 
     constexpr
+    const_array(std::nullptr_t)
+    : d(nullptr), n(0)
+    {}
+
+    constexpr
     const_array(const T *p, size_t z)
     : d(p), n(z)
     {}
@@ -122,14 +127,14 @@ public:
     const_string(const_array<char> a)
     : const_array<char>(a)
     {}
-    const_string(const_array<unsigned char> a)
+    const_string(const_array<uint8_t> a)
     : const_array<char>(reinterpret_cast<const char *>(a.data()), a.size())
     {}
 
-    operator const_array<unsigned char>()
+    operator const_array<uint8_t>()
     {
-        return const_array<unsigned char>(
-                reinterpret_cast<const unsigned char *>(this->data()),
+        return const_array<uint8_t>(
+                reinterpret_cast<const uint8_t *>(this->data()),
                 this->size());
     }
 };

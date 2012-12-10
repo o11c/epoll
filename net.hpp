@@ -93,7 +93,8 @@ class BufferHandler : public Handler
     std::unique_ptr<Parser> parser;
     Handler::Status do_readable();
 public:
-    BufferHandler(std::unique_ptr<Parser> p, int fd);
+    BufferHandler(std::unique_ptr<Parser> p, int fd,
+            const_array<uint8_t> connect_message=nullptr);
     void write(const_array<uint8_t> b);
     virtual Handler::Status on_readable() override;
     virtual Handler::Status on_writable() override;

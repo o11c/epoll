@@ -13,7 +13,7 @@ namespace cli
 
 // Split off the first word of an argument string.
 // This can be used repeatedly to get a fully split array,
-// but doing it this way also allows "raw" commands.
+// but doing it incrementally also allows "raw" commands.
 //
 // After skipping leading whitespace,
 // A word is:
@@ -63,15 +63,17 @@ enum class Status
     NORMAL,
     // Failed to find a command by that name.
     NOT_FOUND,
+    // wrong number/type of arguments
+    ARGS,
     // Generic error
     ERROR,
 };
 
 // A single command.
-// The first argument is the name of the command itself
-// The second is the arguments, which should be parsed according to
-// split_first() unless there's a reason to be raw.
-typedef std::function<Status(const_string, const_string)> Command;
+// The argument is fused selfname-arguments, though obviously
+// the selfname was extracted at some point in the past.
+// use cli::extract to split the args.
+typedef std::function<Status(const_string)> Command;
 
 // A set of commands and an environment
 //
@@ -84,6 +86,17 @@ public:
     Status operator()(const_string line);
 };
 
+// This is ADL-lookup'ed. There are a couple of implementations not shown.
+// The default implementation constructs an istringstream from the word,
+// does an extraction, and checks that it succeeded and emptied the string.
+template<class T>
+bool extract1(const_string word, T *p);
+
+template<class... P>
+bool extract(const_string line, P *... p);
+
 } // namespace cli
+
+#include "cli.tcc"
 
 #endif // CLI_HPP

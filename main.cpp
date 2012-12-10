@@ -15,11 +15,11 @@ using namespace std::placeholders;
 class SimpleShell;
 cli::Status cmd_nosuch(SimpleShell *, const_string);
 cli::Status cmd_join(SimpleShell *, const_string);
-cli::Status cmd_part(SimpleShell *);
+cli::Status cmd_part(SimpleShell *, const_string);
 cli::Status cmd_say(SimpleShell *, const_string);
 cli::Status cmd_nick(SimpleShell *, const_string);
 cli::Status cmd_help(SimpleShell *, const_string);
-cli::Status cmd_xyzzy(SimpleShell *);
+cli::Status cmd_xyzzy(SimpleShell *, const_string);
 
 class SimpleShell : public net::LineHandler, private cli::Shell
 {
@@ -28,21 +28,21 @@ class SimpleShell : public net::LineHandler, private cli::Shell
 
     friend cli::Status cmd_nosuch(SimpleShell *, const_string);
     friend cli::Status cmd_join(SimpleShell *, const_string);
-    friend cli::Status cmd_part(SimpleShell *);
+    friend cli::Status cmd_part(SimpleShell *, const_string);
     friend cli::Status cmd_say(SimpleShell *, const_string);
     friend cli::Status cmd_nick(SimpleShell *, const_string);
     friend cli::Status cmd_help(SimpleShell *, const_string);
-    friend cli::Status cmd_xyzzy(SimpleShell *);
+    friend cli::Status cmd_xyzzy(SimpleShell *, const_string);
 
     void _add_commands()
     {
         this->_default = std::bind(cmd_nosuch, this, _1);
-        this->_commands["join"] = std::bind(cmd_join, this, _2);
-        this->_commands["part"] = std::bind(cmd_part, this);
-        this->_commands["say"] = std::bind(cmd_say, this, _2);
-        this->_commands["nick"] = std::bind(cmd_nick, this, _2);
-        this->_commands["help"] = std::bind(cmd_help, this, _2);
-        this->_commands["xyzzy"] = std::bind(cmd_xyzzy, this);
+        this->_commands["join"] = std::bind(cmd_join, this, _1);
+        this->_commands["part"] = std::bind(cmd_part, this, _1);
+        this->_commands["say"] = std::bind(cmd_say, this, _1);
+        this->_commands["nick"] = std::bind(cmd_nick, this, _1);
+        this->_commands["help"] = std::bind(cmd_help, this, _1);
+        this->_commands["xyzzy"] = std::bind(cmd_xyzzy, this, _1);
     }
 
     SimpleShell(const SimpleShell&) = delete;
@@ -73,23 +73,26 @@ public:
     }
 };
 
-cli::Status cmd_nosuch(SimpleShell *sh, const_string c)
+cli::Status cmd_nosuch(SimpleShell *sh, const_string argv)
 {
     std::ostringstream o;
-    o << "No such command: " << c << "\r\n";
+    o << "No such command: " << cli::split_first(argv).first << "\r\n";
     std::string s = o.str();
     sh->wbh->write(const_string(s));
     return cli::Status::NOT_FOUND;
 }
 
-cli::Status cmd_join(SimpleShell *sh, const_string args)
+cli::Status cmd_join(SimpleShell *sh, const_string argv)
 {
     if (sh->chat)
     {
         sh->wbh->write(const_string("Error: already connected.\r\n"));
         return cli::Status::ERROR;
     }
-    auto room = chat::Room::get(cli::trim(args));
+    const_string _ = nullptr, roomname = nullptr;
+    if (not cli::extract(argv, &_, &roomname))
+        return cli::Status::ARGS;
+    auto room = chat::Room::get(roomname);
     sh->chat = make_unique<chat::Connection>(room, sh->wbh);
     sh->wbh->write(const_string("Hello, "));
     sh->wbh->write(const_string(sh->nick));
@@ -97,8 +100,11 @@ cli::Status cmd_join(SimpleShell *sh, const_string args)
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_part(SimpleShell *sh)
+cli::Status cmd_part(SimpleShell *sh, const_string argv)
 {
+    const_string _ = nullptr;
+    if (not cli::extract(argv, &_))
+        return cli::Status::ARGS;
     if (not sh->chat)
     {
         sh->wbh->write(const_string("Error: not connected.\r\n"));
@@ -108,20 +114,23 @@ cli::Status cmd_part(SimpleShell *sh)
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_say(SimpleShell *sh, const_string args)
+cli::Status cmd_say(SimpleShell *sh, const_string argv)
 {
+    // raw command
     if (not sh->chat)
     {
         sh->wbh->write(const_string("Error: not connected.\r\n"));
         return cli::Status::ERROR;
     }
-    sh->chat->say(sh->nick, cli::trim(args));
+    sh->chat->say(sh->nick, cli::trim(cli::split_first(argv).second));
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_nick(SimpleShell *sh, const_string args)
+cli::Status cmd_nick(SimpleShell *sh, const_string argv)
 {
-    const_string nick = cli::trim(args);
+    const_string _ = nullptr, nick = nullptr;
+    if (not cli::extract(argv, &_, &nick))
+        return cli::Status::ARGS;
     if (not nick)
         return cli::Status::ERROR;
     if (not chat::set_nick(sh->nick, nick))
@@ -133,7 +142,7 @@ cli::Status cmd_nick(SimpleShell *sh, const_string args)
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_help(SimpleShell *sh, const_string)
+cli::Status cmd_help(SimpleShell *sh, const_string argv)
 {
     const_string messages[] =
     {
@@ -149,20 +158,13 @@ cli::Status cmd_help(SimpleShell *sh, const_string)
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_xyzzy(SimpleShell *sh)
+cli::Status cmd_xyzzy(SimpleShell *sh, const_string argv)
 {
+    const_string _ = nullptr;
+    if (not cli::extract(argv, &_))
+        return cli::Status::ARGS;
     sh->wbh->write(const_string("Nothing happens.\r\n"));
     return cli::Status::NORMAL;
-}
-
-bool ok_and_eof(std::istream& in)
-{
-    if (not in)
-        return false;
-    char c;
-    if (in >> c)
-        return false;
-    return true;
 }
 
 int main(int argc, char **argv)
@@ -190,7 +192,7 @@ int main(int argc, char **argv)
                 std::cerr << "Error: port argument not given\n";
                 return 1;
             }
-            if (ok_and_eof(std::istringstream(argv[i]) >> port) and port)
+            if (cli::extract(argv[i], &port) and port)
                 continue;
             std::cerr << "Error: --port argument not integer in range\n";
             return 1;
@@ -209,7 +211,8 @@ int main(int argc, char **argv)
                 return make_unique<net::BufferHandler>(
                         make_unique<net::SentinelParser>(
                             make_unique<SimpleShell>(fd, addr, addrlen)),
-                        fd);
+                        fd,
+                        const_string("Type 'help' for command list.\r\n"));
             };
     std::cout << "try IPv6 ..." << std::endl;
     if (pool.add(make_unique<net::ListenHandler>(adder, port, net::ipv6_any)))

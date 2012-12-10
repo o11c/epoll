@@ -419,8 +419,11 @@ Handler::Status ListenHandler::on_writable()
     return Handler::Status::DROP;
 }
 
-BufferHandler::BufferHandler(std::unique_ptr<Parser> p, int fd)
-: Handler(fd, true, false) // write enabled as needed
+BufferHandler::BufferHandler(std::unique_ptr<Parser> p, int fd,
+        const_array<uint8_t> connect_message)
+: Handler(fd, true, bool(connect_message)) // write enabled as needed
+, inbuf()
+, outbuf(connect_message.begin(), connect_message.end())
 , parser(std::move(p))
 {
     parser->init(this);
