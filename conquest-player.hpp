@@ -70,6 +70,7 @@ namespace conquest
         AsyncController(AsynchronousPlayer *);
         AsyncController(const AsyncController&) = delete;
         AsyncController& operator = (const AsyncController&) = delete;
+        virtual ~AsyncController() override;
     };
 
     struct LaunchedFleet
@@ -82,13 +83,15 @@ namespace conquest
 
     class AsynchronousPlayer
     {
+        // not sure what should be private
+    public:
         friend class AsyncController;
 
         std::unique_ptr<Controls> controls;
 
         AsynchronousPlayer(const AsynchronousPlayer&) = delete;
         AsynchronousPlayer& operator = (const AsynchronousPlayer&) = delete;
-    protected:
+    public:
         Rules rules;
         PlayerID self;
         std::map<PlayerID, std::string> names;
@@ -99,6 +102,8 @@ namespace conquest
         std::vector<LaunchedFleet> past_fleets;
         std::map<std::pair<PlanetID, PlanetID>, FleetSize> current_fleets;
         std::map<std::pair<PlanetID, PlanetID>, FleetSize> recurring_fleets;
+    public:
+        AsynchronousPlayer() = default;
     };
 }
 

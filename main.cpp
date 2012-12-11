@@ -12,43 +12,56 @@
 
 using namespace std::placeholders;
 
-class SimpleShell;
-cli::Status cmd_nosuch(SimpleShell *, const_string);
-cli::Status cmd_join(SimpleShell *, const_string);
-cli::Status cmd_part(SimpleShell *, const_string);
-cli::Status cmd_say(SimpleShell *, const_string);
-cli::Status cmd_nick(SimpleShell *, const_string);
-cli::Status cmd_help(SimpleShell *, const_string);
-cli::Status cmd_xyzzy(SimpleShell *, const_string);
+class GameInstance;
+class GameShell;
 
-class SimpleShell : public net::LineHandler, private cli::Shell
+class GameShell : public net::LineHandler, private cli::Shell
 {
-    std::string nick;
-    std::unique_ptr<chat::Connection> chat;
+    friend class GameInstance;
 
-    friend cli::Status cmd_nosuch(SimpleShell *, const_string);
-    friend cli::Status cmd_join(SimpleShell *, const_string);
-    friend cli::Status cmd_part(SimpleShell *, const_string);
-    friend cli::Status cmd_say(SimpleShell *, const_string);
-    friend cli::Status cmd_nick(SimpleShell *, const_string);
-    friend cli::Status cmd_help(SimpleShell *, const_string);
-    friend cli::Status cmd_xyzzy(SimpleShell *, const_string);
+    std::string nick;
+    std::unique_ptr<chat::Connection> _chat;
+    std::shared_ptr<GameInstance> _game;
+    // really should be a subclass of AsynchronousPlayer,
+    // just to enable logging
+    // (GameShell should not exist)
+    conquest::AsynchronousPlayer _player;
+
+    cli::Status cmd_nosuch(const_string);
+    cli::Status cmd_say(const_string);
+    cli::Status cmd_nick(const_string);
+    cli::Status cmd_help(const_string);
+    cli::Status cmd_xyzzy(const_string);
+    cli::Status cmd_new(const_string);
+    cli::Status cmd_begin(const_string);
+    cli::Status cmd_quit(const_string);
+    cli::Status cmd_turn(const_string);
 
     void _add_commands()
     {
-        this->_default = std::bind(cmd_nosuch, this, _1);
-        this->_commands["join"] = std::bind(cmd_join, this, _1);
-        this->_commands["part"] = std::bind(cmd_part, this, _1);
-        this->_commands["say"] = std::bind(cmd_say, this, _1);
-        this->_commands["nick"] = std::bind(cmd_nick, this, _1);
-        this->_commands["help"] = std::bind(cmd_help, this, _1);
-        this->_commands["xyzzy"] = std::bind(cmd_xyzzy, this, _1);
+        this->_default = std::bind(&GameShell::cmd_nosuch, this, _1);
+        this->add_command("say", "say a line of text",
+                std::bind(&GameShell::cmd_say, this, _1));
+        this->add_command("nick", "change your nickname",
+                std::bind(&GameShell::cmd_nick, this, _1));
+        this->add_command("help", "get help (duh)",
+                std::bind(&GameShell::cmd_help, this, _1));
+        this->_commands["xyzzy"] =
+                std::bind(&GameShell::cmd_xyzzy, this, _1);
+        this->add_command("join", "join a new game",
+               std::bind(&GameShell::cmd_new, this, _1));
+        this->add_command("begin", "actually start the new game",
+               std::bind(&GameShell::cmd_begin, this, _1));
+        this->add_command("quit", "quit the current game",
+               std::bind(&GameShell::cmd_quit, this, _1));
+        this->add_command("turn", "end the current turn of the game",
+               std::bind(&GameShell::cmd_turn, this, _1));
     }
 
-    SimpleShell(const SimpleShell&) = delete;
+    GameShell(const GameShell&) = delete;
 
 public:
-    SimpleShell(int fd, const sockaddr *addr, socklen_t addrlen)
+    GameShell(int fd, const sockaddr *addr, socklen_t addrlen)
     {
         std::string nick = net::sockaddr_to_string(fd, addr, addrlen);
         this->nick = nick;
@@ -62,8 +75,9 @@ public:
             _add_commands();
     }
 
-    ~SimpleShell()
+    ~GameShell()
     {
+        cmd_quit(nullptr);
         chat::set_nick(nick, nullptr);
     }
 
@@ -71,99 +85,209 @@ public:
     {
         cli::Shell::operator()(line);
     }
+
+    void writes(const_array<const_string> arr)
+    {
+        for (const_string s : arr)
+            this->wbh->write(s);
+    }
 };
 
-cli::Status cmd_nosuch(SimpleShell *sh, const_string argv)
+cli::Status GameShell::cmd_nosuch(const_string argv)
 {
-    std::ostringstream o;
-    o << "No such command: " << cli::split_first(argv).first << "\r\n";
-    std::string s = o.str();
-    sh->wbh->write(const_string(s));
+    this->writes({"No such command: ", cli::split_first(argv).first, "\r\n"});
     return cli::Status::NOT_FOUND;
 }
 
-cli::Status cmd_join(SimpleShell *sh, const_string argv)
+cli::Status GameShell::cmd_say(const_string argv)
 {
-    if (sh->chat)
+    if (not this->_chat)
     {
-        sh->wbh->write(const_string("Error: already connected.\r\n"));
-        return cli::Status::ERROR;
+        auto room = chat::Room::get(const_string(nullptr));
+        this->_chat = make_unique<chat::Connection>(room, this->wbh);
     }
-    const_string _ = nullptr, roomname = nullptr;
-    if (not cli::extract(argv, &_, &roomname))
-        return cli::Status::ARGS;
-    auto room = chat::Room::get(roomname);
-    sh->chat = make_unique<chat::Connection>(room, sh->wbh);
-    sh->wbh->write(const_string("Hello, "));
-    sh->wbh->write(const_string(sh->nick));
-    sh->wbh->write(const_string("\r\n"));
-    return cli::Status::NORMAL;
-}
-
-cli::Status cmd_part(SimpleShell *sh, const_string argv)
-{
-    const_string _ = nullptr;
-    if (not cli::extract(argv, &_))
-        return cli::Status::ARGS;
-    if (not sh->chat)
-    {
-        sh->wbh->write(const_string("Error: not connected.\r\n"));
-        return cli::Status::ERROR;
-    }
-    sh->chat = nullptr;
-    return cli::Status::NORMAL;
-}
-
-cli::Status cmd_say(SimpleShell *sh, const_string argv)
-{
     // raw command
-    if (not sh->chat)
-    {
-        sh->wbh->write(const_string("Error: not connected.\r\n"));
-        return cli::Status::ERROR;
-    }
-    sh->chat->say(sh->nick, cli::trim(cli::split_first(argv).second));
+    this->_chat->say(this->nick, cli::trim(cli::split_first(argv).second));
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_nick(SimpleShell *sh, const_string argv)
+cli::Status GameShell::cmd_nick(const_string argv)
 {
     const_string _ = nullptr, nick = nullptr;
     if (not cli::extract(argv, &_, &nick))
         return cli::Status::ARGS;
     if (not nick)
         return cli::Status::ERROR;
-    if (not chat::set_nick(sh->nick, nick))
+    if (not chat::set_nick(this->nick, nick))
     {
-        sh->wbh->write(const_string("Error: nick collision\r\n"));
+        this->writes({"Error: nick collision\r\n"});
         return cli::Status::ERROR;
     }
-    sh->nick = std::string(nick.begin(), nick.end());
+    this->nick = std::string(nick.begin(), nick.end());
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_help(SimpleShell *sh, const_string argv)
+cli::Status GameShell::cmd_help(const_string argv)
 {
-    const_string messages[] =
+    const_string _ = nullptr, cmd = nullptr;
+    if (cli::extract(argv, &_, &cmd))
     {
-        "Commands:\r\n",
-        "join\r\n",
-        "part\r\n",
-        "say\r\n",
-        "nick\r\n",
-        "help\r\n",
-    };
-    for (const_string s : messages)
-        sh->wbh->write(s);
+        auto it = this->_helps.find(std::string(cmd.begin(), cmd.end()));
+        if (it == this->_helps.end())
+        {
+            this->writes({"no help for command: ", cmd, "\r\n"});
+            return cli::Status::ERROR;
+        }
+        this->writes({it->second, "\r\n"});
+        return cli::Status::NORMAL;
+    }
+    if (not cli::extract(argv, &_))
+        this->writes({"'help' takes 0 or 1 arguments, but whatever.\r\n"});
+    this->writes({"Type 'help command' for more help.\r\n"});
+    this->writes({"Command list:\r\n"});
+    for (const auto& pair : this->_helps)
+        this->writes({pair.first, "\r\n"});
     return cli::Status::NORMAL;
 }
 
-cli::Status cmd_xyzzy(SimpleShell *sh, const_string argv)
+cli::Status GameShell::cmd_xyzzy(const_string argv)
 {
     const_string _ = nullptr;
     if (not cli::extract(argv, &_))
         return cli::Status::ARGS;
-    sh->wbh->write(const_string("Nothing happens.\r\n"));
+    this->wbh->write(const_string("Nothing happens.\r\n"));
+    return cli::Status::NORMAL;
+}
+
+// should this be merged with conquest::GalaxyGame?
+// in the real world, GameShell would not even exist ...
+class GameInstance
+{
+    friend class GameShell;
+    std::string name;
+    std::set<GameShell *> connections;
+    std::unique_ptr<conquest::GalaxyGame> game;
+    enum privacy_hack {privacy_ok};
+    void connect(GameShell *);
+    void disconnect(GameShell *);
+    void start();
+public:
+    // really private
+    GameInstance(const_string name, privacy_hack);
+    ~GameInstance();
+
+    static
+    std::shared_ptr<GameInstance> get(const_string name);
+    void broadcast(const_array<const_string> arr);
+};
+
+static
+std::map<std::string, std::weak_ptr<GameInstance>> games;
+
+GameInstance::GameInstance(const_string name, privacy_hack)
+: name(name.begin(), name.end())
+{}
+
+GameInstance::~GameInstance()
+{
+    games.erase(name);
+}
+
+std::shared_ptr<GameInstance> GameInstance::get(const_string name)
+{
+    std::string s(name.begin(), name.end());
+    auto it = games.find(s);
+    if (it != games.end())
+        return it->second.lock();
+    auto n = std::make_shared<GameInstance>(s, privacy_ok);
+    games.insert({s, n});
+    return n;
+}
+
+void GameInstance::connect(GameShell *sh)
+{
+    connections.insert(sh);
+}
+
+void GameInstance::broadcast(const_array<const_string> arr)
+{
+    for (GameShell *c : connections)
+        c->writes(arr);
+}
+
+void GameInstance::disconnect(GameShell *sh)
+{
+    if (connections.erase(sh) and game)
+    {
+        this->broadcast({"Uh-oh, somebody left during a game\r\n",});
+        game->terminate();
+        for (GameShell *s : connections)
+            s->_game = nullptr;
+        // (*this) has not been deleted - sh still has a reference
+    }
+}
+
+void GameInstance::start()
+{
+    if (connections.size() < 2 or connections.size() > 6)
+    {
+        this->broadcast({"There must be 2-6 players to start!\r\n"});
+        return;
+    }
+    conquest::Rules rules;
+    conquest::NewPlayers players;
+    for (GameShell *c : connections)
+    {
+        players.push_back({
+            c->nick,
+            make_unique<conquest::AsyncController>(&c->_player)
+        });
+    }
+    this->game = make_unique<conquest::GalaxyGame>(rules, std::move(players));
+}
+
+cli::Status GameShell::cmd_begin(const_string argv)
+{
+    if (not this->_game)
+        return cli::Status::ERROR;
+    this->_game->start();
+    return cli::Status::NORMAL;
+}
+
+cli::Status GameShell::cmd_quit(const_string argv)
+{
+    if (not this->_game)
+        return cli::Status::ERROR;
+    this->_game->disconnect(this);
+    this->_game = nullptr;
+
+    auto room = chat::Room::get(const_string(nullptr));
+    this->_chat = make_unique<chat::Connection>(room, this->wbh);
+    return cli::Status::NORMAL;
+}
+
+cli::Status GameShell::cmd_new(const_string argv)
+{
+    const_string _ = nullptr, gamename = nullptr;
+    if (not cli::extract(argv, &_, &gamename))
+    {
+        if (not cli::extract(argv, &_))
+            return cli::Status::ARGS;
+        gamename = this->nick;
+    }
+
+    this->_game = GameInstance::get(gamename);
+    this->_game->connect(this);
+    auto room = chat::Room::get(gamename);
+    this->_chat = make_unique<chat::Connection>(room, this->wbh);
+    return cli::Status::NORMAL;
+}
+
+cli::Status GameShell::cmd_turn(const_string argv)
+{
+    if (not _player.controls)
+        return cli::Status::ERROR;
+    _player.controls = nullptr;
     return cli::Status::NORMAL;
 }
 
@@ -210,7 +334,7 @@ int main(int argc, char **argv)
             {
                 return make_unique<net::BufferHandler>(
                         make_unique<net::SentinelParser>(
-                            make_unique<SimpleShell>(fd, addr, addrlen)),
+                            make_unique<GameShell>(fd, addr, addrlen)),
                         fd,
                         const_string("Type 'help' for command list.\r\n"));
             };

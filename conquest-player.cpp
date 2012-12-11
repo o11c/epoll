@@ -64,4 +64,9 @@ namespace conquest
     AsyncController::AsyncController(AsynchronousPlayer *pl)
     : kb(pl)
     {}
+
+    AsyncController::~AsyncController()
+    {
+        kb->controls = nullptr;
+    }
 }

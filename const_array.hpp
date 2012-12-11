@@ -34,6 +34,10 @@ public:
     : d(b), n(e - b)
     {}
 
+    const_array(std::initializer_list<T> list)
+    : d(list.begin()), n(list.size())
+    {}
+
     // Implicit conversion from std::vector
     const_array(const std::vector<T>& v)
     : d(v.data()), n(v.size())

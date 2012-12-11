@@ -81,7 +81,10 @@ class Shell
 {
 protected:
     std::map<std::string, Command> _commands;
+    std::map<std::string, std::string> _helps;
     Command _default;
+
+    void add_command(std::string name, std::string help, Command f);
 public:
     Status operator()(const_string line);
 };

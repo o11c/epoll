@@ -52,6 +52,12 @@ namespace cli
         return s;
     }
 
+    void Shell::add_command(std::string name, std::string help, Command f)
+    {
+        this->_commands[name] = std::move(f);
+        this->_helps[std::move(name)] = std::move(help);
+    }
+
     Status Shell::operator()(const_string line)
     {
         auto pair = split_first(line);

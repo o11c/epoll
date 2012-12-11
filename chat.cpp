@@ -93,7 +93,7 @@ std::shared_ptr<Room> Room::get(const_string room)
     if (it != rooms.end())
         return it->second.lock();
     auto n = std::make_shared<Room>(s, privacy_ok);
-    rooms[s] = n;
+    rooms.insert({s, n});
     return n;
 }
 
